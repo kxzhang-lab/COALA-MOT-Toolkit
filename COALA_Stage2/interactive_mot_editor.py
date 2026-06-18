@@ -11,8 +11,17 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from collections import defaultdict
 
+import sys
+if os.getcwd() not in sys.path:
+    sys.path.insert(0,os.getcwd())
+from DatasetAdapter.DatasetAdapterFactory import DatasetAdapterFactory
+
 class InteractiveMOTEditor:
-    def __init__(self):
+    def __init__(self, dataset_name:str):
+        """描述标注UI界面操作类初始化
+        Params:
+            datase_name: 要标注的数据集名称
+        """
         # Initialize variables
         self.img_dir = None
         self.ann_file = None
@@ -22,6 +31,10 @@ class InteractiveMOTEditor:
         self.current_frame_id = 0
         self.current_frame_bboxes = []
         self.show_labels = True  # Default show labels
+
+        # dataset name and corresponding loading annotation adapter.
+        self.adapter = DatasetAdapterFactory.get_adapter(dataset_name)
+        self.dataset_name = dataset_name
         
         # Add auto-play related attributes
         self.is_auto_playing = False
@@ -782,6 +795,7 @@ class InteractiveMOTEditor:
         """Toggle display of object labels"""
         self.show_labels = self.show_labels_var.get()
         self.update_display()
+
     def open_directory(self):
         """Open image directory and find corresponding annotation file"""
         # Use fixed dataset directory as initial directory
@@ -796,7 +810,7 @@ class InteractiveMOTEditor:
         self.img_dir = img_dir
         
         # Extract video name
-        video_name = os.path.basename(img_dir)
+        video_name = self.adapter.get_video_name_from_path(self.img_dir)
         self.output_data["video_name"] = video_name
         
         # Try to find the annotations file in the parent's "annotations" directory
@@ -859,7 +873,7 @@ class InteractiveMOTEditor:
         print(f"Found max ID in annotation file: {self.max_id}")
         
         # Reset output data
-        video_name = os.path.basename(self.img_dir)
+        video_name = self.adapter.get_video_name_from_path(self.img_dir)
         self.output_data = {
             "label": {},
             "ignore": {},
@@ -882,27 +896,18 @@ class InteractiveMOTEditor:
                 data = line.strip().split(',')
                 if len(data) < 7:  # Ensure we have at least score field
                     continue
-                    
-                frame_idx = int(data[0])
-                track_id = int(data[1])
-                bbox_left = int(data[2])
-                bbox_top = int(data[3])
-                bbox_width = int(data[4])
-                bbox_height = int(data[5])
-                score = int(data[6])
-                
-                # Get other fields if they exist
-                object_category = int(data[7]) if len(data) > 7 else 0
-                truncation = int(data[8]) if len(data) > 8 else 0
-                occlusion = int(data[9]) if len(data) > 9 else 0
+
+                parse_data = self.adapter.parse_annotation_line(data)    
+                frame_offset = self.adapter.get_frame_offset()
+                frame_idx = parse_data['frame_idx'] + frame_offset
                 
                 annotations[frame_idx].append({
-                    'id': track_id,
-                    'bbox': [bbox_left, bbox_top, bbox_width, bbox_height],
-                    'score': score,
-                    'category': object_category,
-                    'truncation': truncation,
-                    'occlusion': occlusion
+                    'id': parse_data['track_id'],
+                    'bbox': parse_data['bbox'],
+                    'score': parse_data['score'],
+                    'category': parse_data['category'],
+                    'truncation': parse_data['truncation'],
+                    'occlusion': parse_data['occlusion']
                 })
         
         return annotations
@@ -916,7 +921,6 @@ class InteractiveMOTEditor:
         return image_files
     
     # 1. Add the jump_to_frame method in the InteractiveMOTEditor class
-
     def jump_to_frame(self):
         """Jump to a specific frame by entering its number"""
         if not self.image_files:
@@ -2413,15 +2417,17 @@ class InteractiveMOTEditor:
         
     def run(self):
         """Run the application"""
-        self.root.mainloop()            
+        self.root.mainloop()     
+
 def main():
     parser = argparse.ArgumentParser(description='Interactive MOT Annotation Editor')
     parser.add_argument('--img_dir', type=str, help='Directory containing images')
     parser.add_argument('--ann_file', type=str, help='Path to MOT format annotation file')
-    parser.add_argument('--mode', type=str, choices=['json', 'merge'], help='Editor mode (json or merge)')
+    parser.add_argument('--mode', type=str, default='json', choices=['json', 'merge'], help='Editor mode (json or merge)')
+    parser.add_argument('--dataset_name', type=str, default='DynUAV', choices=['DynUAV','UAVDT','VisDrone'], help="the dataset to annotate")
     args = parser.parse_args()
     
-    editor = InteractiveMOTEditor()
+    editor = InteractiveMOTEditor(dataset_name=args.dataset_name)
     
     # If command line mode provided, set it
     if args.mode:
@@ -2434,7 +2440,7 @@ def main():
         
         if editor.img_dir and not editor.ann_file:
             # Try to find annotation file automatically
-            video_name = os.path.basename(editor.img_dir)
+            video_name = editor.adapter.get_video_name_from_path(editor.img_dir)
             parent_dir = os.path.dirname(os.path.dirname(editor.img_dir))
             possible_ann_file = os.path.join(parent_dir, "annotations", f"{video_name}.txt")
             
